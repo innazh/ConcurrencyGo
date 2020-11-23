@@ -9,6 +9,10 @@ package main
 import (
 	"fmt"
 	"math/rand"
+
+	/*WaitGroups helps us make the main function Wait for the goroutines to execute w/o needing to use time.Sleep()*/
+	"sync"
+	/*Mutex - mutual exclusion lock - helps us to manage shared memory*/
 	"time"
 )
 
@@ -16,35 +20,52 @@ var cache = map[int]Book{}
 var rnd = rand.New(rand.NewSource(time.Now().UnixNano()))
 
 func main() {
+	wg := &sync.WaitGroup{}
+	m := &sync.RWMutex{}
+
 	for i := 0; i < 10; i++ {
 		id := rnd.Intn(10) + 1 //random int between 0 and 9
-		if b, ok := queryCache(id); ok {
-			fmt.Println("form cache")
-			fmt.Println(b)
-			//else if or `continue` here
-		} else if b, ok := queryDatabase(id); ok {
-			fmt.Println("form database")
-			fmt.Println(b)
-			//else of `continue` here
-		} else {
-			fmt.Printf("Book not found with id: '%v'", id)
-			time.Sleep(150 * time.Microsecond)
-		}
-	}
+		wg.Add(2)
+		go func(id int, wg *sync.WaitGroup, m *sync.RWMutex) {
+			if b, ok := queryCache(id, m); ok {
+				fmt.Println("form cache")
+				fmt.Println(b)
+			}
+			wg.Done()
+		}(id, wg, m)
 
+		go func(id int, wg *sync.WaitGroup, m *sync.RWMutex) {
+			if b, ok := queryDatabase(id, m); ok {
+				fmt.Println("form database")
+				fmt.Println(b)
+			}
+			wg.Done()
+		}(id, wg, m)
+		//The execution is complete once main finishes. This call is neccessary to give goroutines enough time to execute and return to the main function, otherwise we'd have no output
+		//because main would finish its execution before the goroutines would
+		// time.Sleep(150 * time.Millisecond)
+		wg.Wait()
+	}
 }
 
-func queryCache(id int) (Book, bool) {
+/*Use RWMutex only when you've got way more readers than writers, performance is worse than regular mutex*/
+func queryCache(id int, m *sync.RWMutex) (Book, bool) {
+	//allows multiple readers to read from the shared memory but when something is trying to write, then it clears out the readers and lets the writer come in
+	m.RLock()
 	b, ok := cache[id]
+	m.RUnlock()
 	return b, ok
 }
 
-func queryDatabase(id int) (Book, bool) {
+func queryDatabase(id int, m *sync.RWMutex) (Book, bool) {
 	time.Sleep(100 * time.Millisecond)
 	//assuming the that the books might not be sorted
 	for _, b := range books {
 		if b.ID == id {
-			cache[id] = b
+			//makes sure there are no readers (lets all current readers finish) and only 1 writer, accesses the memory, then unlocks
+			m.Lock()
+			cache[id] = b //should be a problem(race condition) because 2 goroutines are trying to access the same variable but it's not... go run --race .
+			m.Unlock()
 			return b, true
 		}
 	}
